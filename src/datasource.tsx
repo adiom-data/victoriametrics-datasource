@@ -89,6 +89,8 @@ export class PrometheusDatasource
   withTemplates: WithTemplate[];
   limitMetrics: LimitMetrics;
   autocompleteSettings: AutocompleteSettings;
+  forwardedScopedVarName?: string;
+  forwardedScopedVarHeaderName?: string;
 
   constructor(
     instanceSettings: DataSourceInstanceSettings<PromOptions>,
@@ -120,6 +122,8 @@ export class PrometheusDatasource
     this.withTemplates = instanceSettings.jsonData.withTemplates ?? [];
     this.limitMetrics = instanceSettings.jsonData.limitMetrics ?? {};
     this.autocompleteSettings = instanceSettings.jsonData.autocompleteSettings ?? {};
+    this.forwardedScopedVarName = normalizeScopedVarName(instanceSettings.jsonData.forwardedScopedVarName);
+    this.forwardedScopedVarHeaderName = instanceSettings.jsonData.forwardedScopedVarHeaderName?.trim();
 
     this.annotations = {
       QueryEditor: AnnotationQueryEditor,
@@ -181,6 +185,29 @@ export class PrometheusDatasource
     return this.templateSrv.containsTemplate(target.expr);
   }
 
+  private getForwardedScopedVarHeaders(request: DataQueryRequest<PromQuery>): Record<string, string> | undefined {
+    if (!this.forwardedScopedVarName || !this.forwardedScopedVarHeaderName) {
+      return undefined;
+    }
+
+    const scopedVar = request.scopedVars?.[this.forwardedScopedVarName];
+    if (!scopedVar) {
+      return undefined;
+    }
+
+    const value = scopedVar.value;
+    if (typeof value !== 'string') {
+      return undefined;
+    }
+
+    const trimmedValue = value.trim();
+    if (!trimmedValue) {
+      return undefined;
+    }
+
+    return { [this.forwardedScopedVarHeaderName]: trimmedValue };
+  }
+
   private resolveWithTemplateExpr(target: PromQuery, dashboardUID: string): WithTemplate | undefined {
     // Read raw template value directly from the constant variable to avoid
     // Grafana's automatic interpolation of nested variables (e.g. $job inside the template).
@@ -195,6 +222,7 @@ export class PrometheusDatasource
     const dashboardUID = request.dashboardUID || request.app || '';
     const template = this.resolveWithTemplateExpr(target, dashboardUID);
     const expr = mergeTemplateWithQuery(target.expr, template)
+    const headers = this.getForwardedScopedVarHeaders(request);
 
     const baseTarget = {
       ...target,
@@ -203,6 +231,7 @@ export class PrometheusDatasource
       requestId: request.panelId + target.refId,
       // We need to pass utcOffsetSec to backend to calculate aligned range
       utcOffsetSec: this.timeSrv.timeRange().to.utcOffset() * 60,
+      ...(headers ? { headers: { ...target.headers, ...headers } } : {}),
     }
 
     if (target.range && target.instant) {
@@ -655,4 +684,8 @@ export function prometheusRegularEscape(value: any) {
 
 export function prometheusSpecialRegexEscape(value: any) {
   return typeof value === 'string' ? value.replace(/\\/g, '\\\\\\\\').replace(/[$^*{}\[\]'+?.()|]/g, '\\\\$&') : value;
+}
+
+function normalizeScopedVarName(value?: string): string | undefined {
+  return value?.trim().replace(/^\$/, '') || undefined;
 }

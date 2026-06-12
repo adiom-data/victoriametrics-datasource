@@ -34,6 +34,7 @@ type Query struct {
 	LegendFormat         string `json:"legendFormat"`
 	Trace                int    `json:"trace,omitempty"`
 	MaxDataPoints        int64
+	Headers              map[string]string `json:"headers,omitempty"`
 	TimeRange            TimeRange
 	BackendQueryInterval time.Duration
 }

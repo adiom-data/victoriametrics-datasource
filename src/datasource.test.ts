@@ -1024,6 +1024,8 @@ describe('processTargetV2', () => {
         access: 'proxy',
         jsonData: {
           timeInterval: '15s',
+          forwardedScopedVarName: 'namespace',
+          forwardedScopedVarHeaderName: 'X-Selected-Scope',
         },
       } as any,
       processTargetTemplateSrv as any,
@@ -1229,5 +1231,55 @@ describe('processTargetV2', () => {
 
     expect((result as any).expr).toContain('from_variable');
     expect((result as any).expr).not.toContain('from_datasource');
+  });
+
+  it('should forward configured scoped variable as query header', () => {
+    const target = { expr: 'metric_name', refId: 'A', range: false, instant: false } as any;
+    const request = {
+      dashboardUID: 'dashboard_1',
+      targets: [],
+      panelId: 2,
+      app: 'app_1',
+      scopedVars: {
+        namespace: {
+          text: 'Tenant A',
+          value: 'tenant-a',
+        },
+      },
+    } as unknown as DataQueryRequest<PromQuery>;
+
+    const result = datasource.processTargetV2(target, request);
+
+    expect(result).toEqual({
+      expr: 'metric_name',
+      headers: {
+        'X-Selected-Scope': 'tenant-a',
+      },
+      queryType: 'timeSeriesQuery',
+      requestId: '2A',
+      utcOffsetSec: 0,
+      refId: 'A',
+      range: false,
+      instant: false,
+    });
+  });
+
+  it('should not forward configured scoped variable when selected value is not singular', () => {
+    const target = { expr: 'metric_name', refId: 'A', range: false, instant: false } as any;
+    const request = {
+      dashboardUID: 'dashboard_1',
+      targets: [],
+      panelId: 2,
+      app: 'app_1',
+      scopedVars: {
+        namespace: {
+          text: ['Tenant A', 'Tenant B'],
+          value: ['tenant-a', 'tenant-b'],
+        },
+      },
+    } as unknown as DataQueryRequest<PromQuery>;
+
+    const result = datasource.processTargetV2(target, request) as PromQuery;
+    expect(result.headers).toBeUndefined();
   });
 });

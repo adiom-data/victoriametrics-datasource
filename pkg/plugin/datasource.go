@@ -203,7 +203,7 @@ func (di *DatasourceInstance) query(ctx context.Context, query backend.DataQuery
 		return newResponseError(err, backend.StatusBadRequest)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, di.settings.HTTPMethod, reqURL, nil)
+	req, err := newQueryHTTPRequest(ctx, di.settings.HTTPMethod, reqURL, q.Headers)
 	if err != nil {
 		err = fmt.Errorf("failed to create new request with context: %w", err)
 		return newResponseError(err, backend.StatusBadRequest)
@@ -217,7 +217,7 @@ func (di *DatasourceInstance) query(ctx context.Context, query backend.DataQuery
 
 		// Something in the middle between client and datasource might be closing
 		// the connection. So we do a one more attempt in hope request will succeed.
-		req, err = http.NewRequestWithContext(ctx, di.settings.HTTPMethod, reqURL, nil)
+		req, err = newQueryHTTPRequest(ctx, di.settings.HTTPMethod, reqURL, q.Headers)
 		if err != nil {
 			err = fmt.Errorf("failed to create new request with context: %w", err)
 			return newResponseError(err, backend.StatusBadRequest)
@@ -284,6 +284,55 @@ func (di *DatasourceInstance) query(ctx context.Context, query backend.DataQuery
 	}
 
 	return backend.DataResponse{Frames: frames}
+}
+
+func newQueryHTTPRequest(ctx context.Context, method, reqURL string, headers map[string]string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	applyQueryHeaders(req, headers)
+	return req, nil
+}
+
+func applyQueryHeaders(req *http.Request, headers map[string]string) {
+	for name, value := range headers {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" || !isForwardableQueryHeader(name) || strings.ContainsAny(value, "\r\n") {
+			continue
+		}
+		req.Header.Set(name, value)
+	}
+}
+
+func isForwardableQueryHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization",
+		"connection",
+		"content-length",
+		"cookie",
+		"host",
+		"proxy-authenticate",
+		"proxy-authorization",
+		"te",
+		"trailer",
+		"transfer-encoding",
+		"upgrade":
+		return false
+	}
+
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func formatResponseError(r Response) string {
