@@ -126,6 +126,37 @@ describe('PrometheusMetricFindQuery', () => {
       });
     });
 
+    it('label_values(resource) should forward scoped headers when provided', async () => {
+      setupMetricFindQuery({
+        query: 'label_values(resource)',
+        response: {
+          data: ['value1', 'value2', 'value3'],
+        },
+      });
+      const scopedQuery = new PrometheusMetricFindQuery(prometheusDatasource, 'label_values(resource)', {
+        'X-Selected-Scope': 'tenant-a',
+      });
+      const results = await scopedQuery.process(raw);
+
+      expect(results).toHaveLength(3);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      expect(fetchMock).toHaveBeenCalledWith({
+        method: 'GET',
+        url: '/api/datasources/uid/ABCDEF/resources/api/v1/label/resource/values',
+        params: {
+          start: `${raw.from.unix()}`,
+          end: `${raw.to.unix()}`,
+        },
+        showErrorAlert: false,
+        hideFromInspector: true,
+        headers: {
+          'X-Datasource-Uid': 'ABCDEF',
+          'X-Plugin-Id': 'victoriametrics-metrics-datasource',
+          'X-Selected-Scope': 'tenant-a',
+        },
+      });
+    });
+
     const emptyFilters = ['{}', '{   }', ' {   }  ', '   {}  '];
 
     emptyFilters.forEach((emptyFilter) => {

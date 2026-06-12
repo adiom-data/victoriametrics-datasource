@@ -34,7 +34,8 @@ export default class PrometheusMetricFindQuery {
 
   constructor(
     private datasource: PrometheusDatasource,
-    private query: string
+    private query: string,
+    private headers?: Record<string, string>
   ) {
     this.datasource = datasource;
     this.query = query;
@@ -102,7 +103,7 @@ export default class PrometheusMetricFindQuery {
 
     const url = `api/v1/label/${label}/values`;
 
-    return this.datasource.getRequest(url, params).then((result: any) => {
+    return this.datasource.getRequest(url, params, { headers: this.headers }).then((result: any) => {
       return _map(result.data, (value) => ({ text: value }));
     });
   }
@@ -116,7 +117,7 @@ export default class PrometheusMetricFindQuery {
     };
     const url = 'api/v1/label/__name__/values';
 
-    return this.datasource.getRequest(url, params).then((result: any) => {
+    return this.datasource.getRequest(url, params, { headers: this.headers }).then((result: any) => {
       return chain(result.data)
         .filter((metricName) => {
           const r = new RegExp(metricFilterPattern);
@@ -138,7 +139,7 @@ export default class PrometheusMetricFindQuery {
       query,
       time: getVictoriaMetricsTime(this.range.to, true).toString(),
     };
-    return this.datasource.getRequest(url, params).then((result: any) => {
+    return this.datasource.getRequest(url, params, { headers: this.headers }).then((result: any) => {
       switch (result.data.resultType) {
         case 'scalar': // [ <unix_time>, "<scalar_value>" ]
         case 'string': // [ <unix_time>, "<string_value>" ]
@@ -183,7 +184,7 @@ export default class PrometheusMetricFindQuery {
     const url = 'api/v1/series';
     const self = this;
 
-    return this.datasource.getRequest(url, params).then((result: any) => {
+    return this.datasource.getRequest(url, params, { headers: this.headers }).then((result: any) => {
       return _map(result.data, (metric: { [key: string]: string }) => {
         return {
           text: self.datasource.getOriginalMetricName(metric),

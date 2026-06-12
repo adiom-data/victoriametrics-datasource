@@ -24,18 +24,20 @@ const (
 
 // Query represents backend query object
 type Query struct {
-	RefID                string `json:"refId"`
-	Instant              bool   `json:"instant"`
-	Range                bool   `json:"range"`
-	Interval             string `json:"interval"`
-	IntervalMs           int64  `json:"intervalMs"`
-	TimeInterval         string `json:"timeInterval"`
-	Expr                 string `json:"expr"`
-	LegendFormat         string `json:"legendFormat"`
-	Trace                int    `json:"trace,omitempty"`
-	MaxDataPoints        int64
-	TimeRange            TimeRange
-	BackendQueryInterval time.Duration
+	RefID                   string `json:"refId"`
+	Instant                 bool   `json:"instant"`
+	Range                   bool   `json:"range"`
+	Interval                string `json:"interval"`
+	IntervalMs              int64  `json:"intervalMs"`
+	TimeInterval            string `json:"timeInterval"`
+	Expr                    string `json:"expr"`
+	LegendFormat            string `json:"legendFormat"`
+	Trace                   int    `json:"trace,omitempty"`
+	ForwardedScopedVarValue string `json:"forwardedScopedVarValue,omitempty"`
+	MaxDataPoints           int64
+	Headers                 map[string]string `json:"headers,omitempty"`
+	TimeRange               TimeRange
+	BackendQueryInterval    time.Duration
 }
 
 // TimeRange represents time range backend object

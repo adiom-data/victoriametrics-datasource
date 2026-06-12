@@ -18,7 +18,7 @@
 
 import React, { SyntheticEvent, useCallback, useEffect, useState } from 'react';
 
-import { CoreApp, DataQueryRequest, LoadingState } from '@grafana/data';
+import { CoreApp, DataQueryRequest, LoadingState, SelectableValue } from '@grafana/data';
 import { getTemplateSrv, reportInteraction } from '@grafana/runtime';
 import { ConfirmModal, IconButton } from '@grafana/ui';
 
@@ -56,9 +56,21 @@ export const PromQueryEditorSelector = React.memo<Props>((props) => {
   const [parseModalOpen, setParseModalOpen] = useState(false);
   const [trace, setTrace] = useState(false);
   const [rawQuery, setRawQuery] = useState(false)
+  const [forwardedScopedVarOptions, setForwardedScopedVarOptions] = useState<Array<SelectableValue<string>>>([]);
   const { flag: explain, setFlag: setExplain } = useFlag(queryEditorExplainKey);
 
-  const dashboardUID: string = (data?.request as DataQueryRequest<PromQuery>)?.dashboardUID || ''
+  const request = data?.request as DataQueryRequest<PromQuery> | undefined;
+  const dashboardUID: string = request?.dashboardUID || ''
+  const forwardedScopedVarName = datasource.forwardedScopedVarName;
+  const forwardedScopedVarLabel = forwardedScopedVarName ?? 'value';
+  const hasDashboardForwardedScopedVar = Boolean(
+    dashboardUID && forwardedScopedVarName && request?.scopedVars?.[forwardedScopedVarName]
+  );
+  const showForwardedScopedVarSelect = Boolean(
+    forwardedScopedVarName &&
+    datasource.forwardedScopedVarHeaderName &&
+    !hasDashboardForwardedScopedVar
+  );
 
   const query = getQueryWithDefaults(props.query, app);
 
@@ -136,6 +148,29 @@ export const PromQueryEditorSelector = React.memo<Props>((props) => {
   }, [onRunQuery, datasource, resolvedWithTemplate, app])
 
   useEffect(() => {
+    if (!showForwardedScopedVarSelect) {
+      return;
+    }
+
+    let active = true;
+    datasource.getForwardedScopedVarValues()
+      .then((values) => {
+        if (active) {
+          setForwardedScopedVarOptions(values.map((value) => ({ label: value, value })));
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setForwardedScopedVarOptions([]);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [datasource, showForwardedScopedVarSelect]);
+
+  useEffect(() => {
     const query = getQueryWithDefaults(props.query, app);
     onChange(query);
     // eslint-disable-next-line react-hooks/exhaustive-deps -- dependencies not needed, should only run once
@@ -171,6 +206,20 @@ export const PromQueryEditorSelector = React.memo<Props>((props) => {
           }}
           options={promQueryModeller.getQueryPatterns().map((x) => ({ label: x.name, value: x }))}
         />
+        {showForwardedScopedVarSelect && (
+          <InlineSelect
+            label={forwardedScopedVarLabel}
+            value={query.forwardedScopedVarValue ? { label: query.forwardedScopedVarValue, value: query.forwardedScopedVarValue } : null}
+            placeholder={`Select ${forwardedScopedVarLabel}`}
+            allowCustomValue
+            isClearable
+            options={forwardedScopedVarOptions}
+            onChange={({ value }) => {
+              const nextValue = typeof value === 'string' ? value.trim() : undefined;
+              onChange({ ...query, forwardedScopedVarValue: nextValue || undefined });
+            }}
+          />
+        )}
         <QueryHeaderSwitch label='Explain' value={explain} onChange={onShowExplainChange} />
         <QueryHeaderSwitch label='Trace' value={trace} onChange={onShowTracingChange} />
         <QueryHeaderSwitch label='Raw' value={rawQuery} onChange={onShowRawChange} />

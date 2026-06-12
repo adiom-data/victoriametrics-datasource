@@ -383,12 +383,67 @@ describe('PrometheusDatasource', () => {
       expect(templateSrvStub.replace).toHaveBeenCalledTimes(2);
       expect(queries[0].interval).toBe(interval);
     });
+
+    it('should carry a singular forwarded scoped variable value onto interpolated queries', () => {
+      const scopedSettings = cloneDeep(instanceSettings);
+      scopedSettings.jsonData = {
+        forwardedScopedVarName: 'namespace',
+        forwardedScopedVarHeaderName: 'X-Selected-Scope',
+      };
+      const scopedDs = new PrometheusDatasource(scopedSettings, templateSrvStub, timeSrvStub);
+      const query: PromQuery = {
+        expr: 'test{namespace="$namespace"}',
+        refId: 'A',
+      };
+
+      const queries = scopedDs.interpolateVariablesInQueries([query], {
+        namespace: { text: 'tenant-a', value: 'tenant-a' },
+      });
+
+      expect(queries[0].forwardedScopedVarValue).toBe('tenant-a');
+    });
+
+    it('should build forwarded scoped variable headers from scopedVars', () => {
+      const scopedSettings = cloneDeep(instanceSettings);
+      scopedSettings.jsonData = {
+        forwardedScopedVarName: 'namespace',
+        forwardedScopedVarHeaderName: 'X-Selected-Scope',
+      };
+      const scopedDs = new PrometheusDatasource(scopedSettings, templateSrvStub, timeSrvStub);
+
+      const headers = scopedDs.getForwardedScopedVarHeaders({
+        namespace: { text: 'tenant-a', value: 'tenant-a' },
+      });
+
+      expect(headers).toEqual({
+        'X-Selected-Scope': 'tenant-a',
+      });
+    });
   });
 
   describe('applyTemplateVariables', () => {
     afterAll(() => {
       getAdhocFiltersMock.mockImplementation(() => []);
       replaceMock.mockImplementation((a: string) => a);
+    });
+
+    it('should carry a singular forwarded scoped variable value onto templated queries', () => {
+      const scopedSettings = cloneDeep(instanceSettings);
+      scopedSettings.jsonData = {
+        forwardedScopedVarName: 'namespace',
+        forwardedScopedVarHeaderName: 'X-Selected-Scope',
+      };
+      const scopedDs = new PrometheusDatasource(scopedSettings, templateSrvStub, timeSrvStub);
+      const query: PromQuery = {
+        expr: 'test{namespace="$namespace"}',
+        refId: 'A',
+      };
+
+      const templatedQuery = scopedDs.applyTemplateVariables(query, {
+        namespace: { text: 'tenant-a', value: 'tenant-a' },
+      });
+
+      expect(templatedQuery.forwardedScopedVarValue).toBe('tenant-a');
     });
 
     it('should call replace function for legendFormat', () => {
@@ -1024,6 +1079,8 @@ describe('processTargetV2', () => {
         access: 'proxy',
         jsonData: {
           timeInterval: '15s',
+          forwardedScopedVarName: 'namespace',
+          forwardedScopedVarHeaderName: 'X-Selected-Scope',
         },
       } as any,
       processTargetTemplateSrv as any,
@@ -1229,5 +1286,178 @@ describe('processTargetV2', () => {
 
     expect((result as any).expr).toContain('from_variable');
     expect((result as any).expr).not.toContain('from_datasource');
+  });
+
+  it('should not attach configured scoped variable as a frontend query header', () => {
+    const target = { expr: 'metric_name', refId: 'A', range: false, instant: false } as any;
+    const request = {
+      dashboardUID: 'dashboard_1',
+      targets: [],
+      panelId: 2,
+      app: 'app_1',
+      scopedVars: {
+        namespace: {
+          text: 'Tenant A',
+          value: 'tenant-a',
+        },
+      },
+    } as unknown as DataQueryRequest<PromQuery>;
+
+    const result = datasource.processTargetV2(target, request);
+
+    expect(result).toEqual({
+      expr: 'metric_name',
+      queryType: 'timeSeriesQuery',
+      requestId: '2A',
+      utcOffsetSec: 0,
+      refId: 'A',
+      range: false,
+      instant: false,
+    });
+  });
+
+  it('should not forward configured scoped variable when selected value is not singular', () => {
+    const target = { expr: 'metric_name', refId: 'A', range: false, instant: false } as any;
+    const request = {
+      dashboardUID: 'dashboard_1',
+      targets: [],
+      panelId: 2,
+      app: 'app_1',
+      scopedVars: {
+        namespace: {
+          text: ['Tenant A', 'Tenant B'],
+          value: ['tenant-a', 'tenant-b'],
+        },
+      },
+    } as unknown as DataQueryRequest<PromQuery>;
+
+    const result = datasource.processTargetV2(target, request) as PromQuery;
+    expect(result.headers).toBeUndefined();
+  });
+
+  it('should resolve configured scoped variable when selected value is a single-item array', () => {
+    const target = { expr: 'metric_name', refId: 'A', range: false, instant: false } as any;
+    const request = {
+      dashboardUID: 'dashboard_1',
+      targets: [],
+      panelId: 2,
+      app: 'app_1',
+      scopedVars: {
+        namespace: {
+          text: ['Tenant A'],
+          value: ['tenant-a'],
+        },
+      },
+    } as unknown as DataQueryRequest<PromQuery>;
+
+    const result = datasource.processTargetV2(target, request);
+    const forwardedValue = (datasource as any).getForwardedScopedVarValueForRequest(request);
+
+    expect(result).toEqual({
+      expr: 'metric_name',
+      queryType: 'timeSeriesQuery',
+      requestId: '2A',
+      utcOffsetSec: 0,
+      refId: 'A',
+      range: false,
+      instant: false,
+    });
+    expect(forwardedValue).toBe('tenant-a');
+  });
+
+  it('should forward query-level scoped variable value when dashboard scoped variable is absent', () => {
+    const target = { expr: 'metric_name', refId: 'A', range: false, instant: false, forwardedScopedVarValue: 'tenant-a' } as any;
+    const request = {
+      dashboardUID: 'dashboard_1',
+      targets: [target],
+      panelId: 2,
+      app: 'app_1',
+    } as unknown as DataQueryRequest<PromQuery>;
+
+    const result = datasource.processTargetV2(target, request);
+
+    expect(result).toEqual({
+      expr: 'metric_name',
+      forwardedScopedVarValue: 'tenant-a',
+      queryType: 'timeSeriesQuery',
+      requestId: '2A',
+      utcOffsetSec: 0,
+      refId: 'A',
+      range: false,
+      instant: false,
+    });
+  });
+
+  it('should add the query-level scoped variable as a label in Explore', () => {
+    const target = {
+      expr: 'rate(container_cpu_usage_seconds_total[5m])',
+      refId: 'A',
+      range: false,
+      instant: false,
+      forwardedScopedVarValue: 'tenant-a',
+    } as any;
+    const request = {
+      dashboardUID: '',
+      targets: [target],
+      panelId: 2,
+      app: CoreApp.Explore,
+    } as unknown as DataQueryRequest<PromQuery>;
+
+    const result = datasource.processTargetV2(target, request);
+
+    expect(result).toEqual({
+      expr: 'rate(container_cpu_usage_seconds_total{namespace="tenant-a"}[5m])',
+      forwardedScopedVarValue: 'tenant-a',
+      queryType: 'timeSeriesQuery',
+      requestId: '2A',
+      utcOffsetSec: 0,
+      refId: 'A',
+      range: false,
+      instant: false,
+    });
+  });
+
+  it('should not add the query-level scoped variable as a label outside Explore', () => {
+    const target = {
+      expr: 'rate(container_cpu_usage_seconds_total[5m])',
+      refId: 'A',
+      range: false,
+      instant: false,
+      forwardedScopedVarValue: 'tenant-a',
+    } as any;
+    const request = {
+      dashboardUID: 'dashboard_1',
+      targets: [target],
+      panelId: 2,
+      app: CoreApp.Dashboard,
+    } as unknown as DataQueryRequest<PromQuery>;
+
+    const result = datasource.processTargetV2(target, request);
+
+    expect(result).toEqual({
+      expr: 'rate(container_cpu_usage_seconds_total[5m])',
+      forwardedScopedVarValue: 'tenant-a',
+      queryType: 'timeSeriesQuery',
+      requestId: '2A',
+      utcOffsetSec: 0,
+      refId: 'A',
+      range: false,
+      instant: false,
+    });
+  });
+
+  it('should reject mixed query-level scoped variable values in one request', () => {
+    const target = { expr: 'metric_name', refId: 'A', range: false, instant: false, forwardedScopedVarValue: 'tenant-a' } as any;
+    const request = {
+      dashboardUID: 'dashboard_1',
+      targets: [
+        target,
+        { expr: 'other_metric', refId: 'B', range: false, instant: false, forwardedScopedVarValue: 'tenant-b' },
+      ],
+      panelId: 2,
+      app: 'app_1',
+    } as unknown as DataQueryRequest<PromQuery>;
+
+    expect(() => (datasource as any).getForwardedScopedVarValueForRequest(request)).toThrow('All queries must use the same namespace value.');
   });
 });

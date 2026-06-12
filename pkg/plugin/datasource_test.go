@@ -404,6 +404,133 @@ func TestDatasourceQueryRequest(t *testing.T) {
 	}
 }
 
+func TestDatasourceQueryRequestForwardsQueryHeaders(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/query", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Selected-Scope"); got != "tenant-a" {
+			t.Fatalf("expected X-Selected-Scope header %q, got %q", "tenant-a", got)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer grafana-token" {
+			t.Fatalf("expected Grafana Authorization header %q, got %q", "Bearer grafana-token", got)
+		}
+		_, err := w.Write([]byte(`{"status":"success","data":{"resultType":"scalar","result":[1583786142, "1"]}}`))
+		if err != nil {
+			t.Fatalf("error write response: %s", err)
+		}
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx := context.Background()
+	ds := NewDatasource()
+	pluginCtx := backend.PluginContext{
+		DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+			URL:      srv.URL,
+			JSONData: []byte(`{"httpMethod":"GET","customQueryParameters":""}`),
+		},
+	}
+
+	rsp, gotErr := ds.QueryData(ctx, &backend.QueryDataRequest{
+		PluginContext: pluginCtx,
+		Headers: map[string]string{
+			"Authorization":    "Bearer grafana-token",
+			"X-Selected-Scope": "tenant-a",
+		},
+		Queries: []backend.DataQuery{
+			{
+				RefID:     "A",
+				QueryType: instantQueryPath,
+				JSON: []byte(`{
+    "refId": "A",
+    "instant": true,
+    "range": false,
+    "interval": "10s",
+    "intervalMs": 10000,
+    "timeInterval": "",
+    "expr": "sum(vm_http_request_total)",
+    "legendFormat": "__auto",
+    "headers": {
+        "Authorization": "Bearer should-not-forward"
+    }
+}`),
+			},
+		},
+	})
+	if gotErr != nil {
+		t.Fatalf("unexpected %s", gotErr)
+	}
+	response := rsp.Responses["A"]
+	if response.Error != nil {
+		t.Fatalf("unexpected error: %s", response.Error.Error())
+	}
+	if len(response.Frames) != 1 {
+		t.Fatalf("expected 1 frame got %d", len(response.Frames))
+	}
+	if response.Frames[0].Fields[1].At(0) != float64(1) {
+		t.Fatalf("unexpected value %v", response.Frames[0].Fields[1].At(0))
+	}
+}
+
+func TestDatasourceQueryRequestForwardsScopedVarValueAsHeader(t *testing.T) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/api/v1/query", func(w http.ResponseWriter, r *http.Request) {
+		if got := r.Header.Get("X-Selected-Scope"); got != "tenant-a" {
+			t.Fatalf("expected X-Selected-Scope header %q, got %q", "tenant-a", got)
+		}
+		_, err := w.Write([]byte(`{"status":"success","data":{"resultType":"scalar","result":[1583786142, "1"]}}`))
+		if err != nil {
+			t.Fatalf("error write response: %s", err)
+		}
+	})
+
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+
+	ctx := context.Background()
+	ds := NewDatasource()
+	pluginCtx := backend.PluginContext{
+		DataSourceInstanceSettings: &backend.DataSourceInstanceSettings{
+			URL:      srv.URL,
+			JSONData: []byte(`{"httpMethod":"GET","customQueryParameters":"","forwardedScopedVarHeaderName":"X-Selected-Scope"}`),
+		},
+	}
+
+	rsp, gotErr := ds.QueryData(ctx, &backend.QueryDataRequest{
+		PluginContext: pluginCtx,
+		Queries: []backend.DataQuery{
+			{
+				RefID:     "A",
+				QueryType: instantQueryPath,
+				JSON: []byte(`{
+    "refId": "A",
+    "instant": true,
+    "range": false,
+    "interval": "10s",
+    "intervalMs": 10000,
+    "timeInterval": "",
+    "expr": "sum(vm_http_request_total)",
+    "legendFormat": "__auto",
+    "forwardedScopedVarValue": "tenant-a"
+}`),
+			},
+		},
+	})
+	if gotErr != nil {
+		t.Fatalf("unexpected %s", gotErr)
+	}
+	response := rsp.Responses["A"]
+	if response.Error != nil {
+		t.Fatalf("unexpected error: %s", response.Error.Error())
+	}
+	if len(response.Frames) != 1 {
+		t.Fatalf("expected 1 frame got %d", len(response.Frames))
+	}
+	if response.Frames[0].Fields[1].At(0) != float64(1) {
+		t.Fatalf("unexpected value %v", response.Frames[0].Fields[1].At(0))
+	}
+}
+
 func TestDatasourceQueryRequestWithRetry(t *testing.T) {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(_ http.ResponseWriter, _ *http.Request) {
@@ -828,7 +955,10 @@ func TestVMAPIQuery_ContentEncoding(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			// Create mock upstream VM server that returns compressed response
-			mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			mockSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if got := r.Header.Get("Authorization"); got != "Bearer grafana-token" {
+					t.Fatalf("expected Grafana Authorization header %q, got %q", "Bearer grafana-token", got)
+				}
 				body := []byte(expectedJSON)
 				if tc.compressBody != nil {
 					body = tc.compressBody(body)
@@ -853,6 +983,7 @@ func TestVMAPIQuery_ContentEncoding(t *testing.T) {
 
 			ctx := backend.WithPluginContext(context.Background(), pluginCtx)
 			req := httptest.NewRequest(http.MethodGet, "/api/v1/labels", nil)
+			req.Header.Set("Authorization", "Bearer grafana-token")
 			req = req.WithContext(ctx)
 
 			rr := httptest.NewRecorder()

@@ -11,6 +11,7 @@ endif
 
 PLUGIN_ID=victoriametrics-metrics-datasource
 APP_NAME=victoriametrics_metrics_backend_plugin
+SCOPED_HEADERS_TAG ?= v0.25.0-scoped-headers.1
 
 GO_BUILDINFO = -X 'github.com/grafana/grafana-plugin-sdk-go/build.buildInfoJSON={\"time\":${DATEINFO_TAG},\"id\":\"${PLUGIN_ID}\",\"version\":\"${BUILDINFO_TAG}\",\"branch\":\"${PKG_TAG}\"}'
 
@@ -49,6 +50,20 @@ vm-plugin-pack: vm-plugin-build
 	cd - && \
 	sha1sum dist/$(PACKAGE_NAME).zip > dist/$(PACKAGE_NAME)_checksums_zip.txt && \
 	sha1sum dist/$(PACKAGE_NAME).tar.gz > dist/$(PACKAGE_NAME)_checksums_tar.gz.txt
+
+vm-scoped-plugin-pack:
+	$(MAKE) vm-plugin-pack PKG_TAG=$(SCOPED_HEADERS_TAG)
+
+vm-scoped-plugin-upload:
+	PACKAGE_NAME="$(PLUGIN_ID)-$(SCOPED_HEADERS_TAG)"; \
+	gh release upload $(SCOPED_HEADERS_TAG) \
+		dist/$${PACKAGE_NAME}.zip \
+		dist/$${PACKAGE_NAME}.tar.gz \
+		dist/$${PACKAGE_NAME}_checksums_zip.txt \
+		dist/$${PACKAGE_NAME}_checksums_tar.gz.txt \
+		--clobber
+
+vm-scoped-plugin-publish: vm-scoped-plugin-pack vm-scoped-plugin-upload
 
 vm-plugin-cleanup:
 	rm -rf ./$(PLUGIN_ID) plugins

@@ -2,10 +2,13 @@ import ForkTsCheckerWebpackPlugin from 'fork-ts-checker-webpack-plugin';
 import type { Configuration } from 'webpack';
 import { merge } from 'webpack-merge';
 
-import grafanaConfig from './.config/webpack/webpack.config';
+import grafanaConfig from './.config/webpack/webpack.config.ts';
 
 const config = async (env): Promise<Configuration> => {
   const baseConfig = await grafanaConfig(env);
+  const externals = Array.isArray(baseConfig.externals)
+    ? baseConfig.externals.filter((external) => external !== 'react/jsx-runtime' && external !== 'react/jsx-dev-runtime')
+    : baseConfig.externals;
 
   const newConfig = merge(baseConfig, {
     // update output configuration
@@ -17,6 +20,7 @@ const config = async (env): Promise<Configuration> => {
       },
     },
   });
+  newConfig.externals = externals;
 
   // If typecheck-only, remove all plugins except ForkTsCheckerWebpackPlugin
   if (env.typecheckOnly) {

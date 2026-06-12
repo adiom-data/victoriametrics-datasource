@@ -25,6 +25,7 @@ import {
   AnnotationEvent,
   AnnotationQuery,
   CustomVariableModel,
+  CoreApp,
   DataFrame,
   DataQueryRequest,
   DataQueryResponse,
@@ -89,6 +90,8 @@ export class PrometheusDatasource
   withTemplates: WithTemplate[];
   limitMetrics: LimitMetrics;
   autocompleteSettings: AutocompleteSettings;
+  forwardedScopedVarName?: string;
+  forwardedScopedVarHeaderName?: string;
 
   constructor(
     instanceSettings: DataSourceInstanceSettings<PromOptions>,
@@ -120,6 +123,8 @@ export class PrometheusDatasource
     this.withTemplates = instanceSettings.jsonData.withTemplates ?? [];
     this.limitMetrics = instanceSettings.jsonData.limitMetrics ?? {};
     this.autocompleteSettings = instanceSettings.jsonData.autocompleteSettings ?? {};
+    this.forwardedScopedVarName = normalizeScopedVarName(instanceSettings.jsonData.forwardedScopedVarName);
+    this.forwardedScopedVarHeaderName = instanceSettings.jsonData.forwardedScopedVarHeaderName?.trim();
 
     this.annotations = {
       QueryEditor: AnnotationQueryEditor,
@@ -181,6 +186,72 @@ export class PrometheusDatasource
     return this.templateSrv.containsTemplate(target.expr);
   }
 
+  private getForwardedScopedVarValueForRequest(request: DataQueryRequest<PromQuery>): string | undefined {
+    if (!this.forwardedScopedVarName) {
+      return undefined;
+    }
+
+    const scopedValue = this.getForwardedScopedVarValue(request.scopedVars);
+    if (scopedValue) {
+      return scopedValue;
+    }
+
+    const queryValues = new Set(
+      request.targets
+        .map((target) => normalizeForwardedScopedVarValue(target.forwardedScopedVarValue))
+        .filter((value): value is string => Boolean(value))
+    );
+    if (queryValues.size === 0) {
+      return undefined;
+    }
+    if (queryValues.size > 1) {
+      throw new Error(`All queries must use the same ${this.forwardedScopedVarName} value.`);
+    }
+
+    return [...queryValues][0];
+  }
+
+  private getForwardedScopedVarValue(scopedVars?: ScopedVars): string | undefined {
+    if (!this.forwardedScopedVarName) {
+      return undefined;
+    }
+
+    const scopedValue = normalizeForwardedScopedVarValue(scopedVars?.[this.forwardedScopedVarName]?.value);
+    if (scopedValue) {
+      return scopedValue;
+    }
+
+    const replacedValue = this.templateSrv.replace(`$${this.forwardedScopedVarName}`, scopedVars);
+    if (replacedValue === `$${this.forwardedScopedVarName}`) {
+      return undefined;
+    }
+
+    return normalizeForwardedScopedVarValue(replacedValue);
+  }
+
+  getForwardedScopedVarHeaders(scopedVars?: ScopedVars): Record<string, string> | undefined {
+    if (!this.forwardedScopedVarHeaderName) {
+      return undefined;
+    }
+
+    const value = this.getForwardedScopedVarValue(scopedVars);
+    if (!value) {
+      return undefined;
+    }
+
+    return {
+      [this.forwardedScopedVarHeaderName]: value,
+    };
+  }
+
+  async getForwardedScopedVarValues(): Promise<string[]> {
+    if (!this.forwardedScopedVarName) {
+      return [];
+    }
+
+    return this.languageProvider.getLabelValues(this.forwardedScopedVarName);
+  }
+
   private resolveWithTemplateExpr(target: PromQuery, dashboardUID: string): WithTemplate | undefined {
     // Read raw template value directly from the constant variable to avoid
     // Grafana's automatic interpolation of nested variables (e.g. $job inside the template).
@@ -191,10 +262,18 @@ export class PrometheusDatasource
     return templateExpr ? { uid: dashboardUID, expr: templateExpr } : undefined;
   }
 
+  private addExploreScopedVarLabel(target: PromQuery, request: DataQueryRequest<PromQuery>, expr: string): string {
+    if (request.app !== CoreApp.Explore || !this.forwardedScopedVarName || !target.forwardedScopedVarValue) {
+      return expr;
+    }
+
+    return addLabelToQuery(expr, this.forwardedScopedVarName, target.forwardedScopedVarValue);
+  }
+
   processTargetV2(target: PromQuery, request: DataQueryRequest<PromQuery>) {
     const dashboardUID = request.dashboardUID || request.app || '';
     const template = this.resolveWithTemplateExpr(target, dashboardUID);
-    const expr = mergeTemplateWithQuery(target.expr, template)
+    const expr = this.addExploreScopedVarLabel(target, request, mergeTemplateWithQuery(target.expr, template));
 
     const baseTarget = {
       ...target,
@@ -230,8 +309,22 @@ export class PrometheusDatasource
     if (this.access === 'direct') {
       return this.directAccessError();
     }
-    const targets = request.targets.map((target) => this.processTargetV2(target, request));
-    const newRequest = { ...request, targets: targets.flat() };
+    let targets: Array<PromQuery | PromQuery[]>;
+    try {
+      this.getForwardedScopedVarValueForRequest(request);
+      targets = request.targets.map((target) => this.processTargetV2(target, request));
+    } catch (error) {
+      return of({
+        data: [],
+        error: {
+          message: error instanceof Error ? error.message : String(error),
+        },
+      });
+    }
+    const newRequest = {
+      ...request,
+      targets: targets.flat(),
+    };
     return super.query(newRequest).pipe(
       map((response) =>
         transformV2(response, newRequest, {})
@@ -271,8 +364,16 @@ export class PrometheusDatasource
       __interval_ms: { text: rangeUtil.intervalToMs(this.interval), value: rangeUtil.intervalToMs(this.interval) },
       ...this.getRangeScopedVars(range),
     };
-    const interpolated = this.templateSrv.replace(query, scopedVars, this.interpolateQueryExpr);
-    const metricFindQuery = new PrometheusMetricFindQuery(this, interpolated);
+    const requestScopedVars = {
+      ...options?.scopedVars,
+      ...scopedVars,
+    };
+    const interpolated = this.templateSrv.replace(query, requestScopedVars, this.interpolateQueryExpr);
+    const metricFindQuery = new PrometheusMetricFindQuery(
+      this,
+      interpolated,
+      this.getForwardedScopedVarHeaders(requestScopedVars)
+    );
     return metricFindQuery.process(range);
   }
 
@@ -431,11 +532,13 @@ export class PrometheusDatasource
   interpolateVariablesInQueries(queries: PromQuery[], scopedVars: ScopedVars): PromQuery[] {
     let expandedQueries = queries;
     if (queries && queries.length) {
+      const forwardedScopedVarValue = this.getForwardedScopedVarValue(scopedVars);
       expandedQueries = queries.map((query) => ({
         ...query,
         datasource: this.getRef(),
         expr: this.templateSrv.replace(query.expr, scopedVars, this.interpolateQueryExpr),
         interval: this.templateSrv.replace(query.interval, scopedVars),
+        ...(forwardedScopedVarValue ? { forwardedScopedVarValue } : {}),
       }));
     }
     return expandedQueries;
@@ -560,6 +663,7 @@ export class PrometheusDatasource
   // Used when running queries trough backend
   applyTemplateVariables(target: PromQuery, scopedVars: ScopedVars, filters?: AdHocVariableFilter[]) {
     const variables = { ...scopedVars };
+    const forwardedScopedVarValue = this.getForwardedScopedVarValue(scopedVars);
 
     // We want to interpolate these variables on backend.
     // The pre-calculated values are replaced withe the variable strings.
@@ -589,6 +693,7 @@ export class PrometheusDatasource
       // withTemplate is a variable reference ("$withTemplate") used by processTargetV2
       // to read the raw template value. It does not need interpolation here.
       withTemplate: target.withTemplate,
+      ...(forwardedScopedVarValue ? { forwardedScopedVarValue } : {}),
     };
   }
 
@@ -655,4 +760,23 @@ export function prometheusRegularEscape(value: any) {
 
 export function prometheusSpecialRegexEscape(value: any) {
   return typeof value === 'string' ? value.replace(/\\/g, '\\\\\\\\').replace(/[$^*{}\[\]'+?.()|]/g, '\\\\$&') : value;
+}
+
+function normalizeScopedVarName(value?: string): string | undefined {
+  return value?.trim().replace(/^\$/, '') || undefined;
+}
+
+function normalizeForwardedScopedVarValue(value: unknown): string | undefined {
+  if (Array.isArray(value)) {
+    if (value.length !== 1) {
+      return undefined;
+    }
+    value = value[0];
+  }
+
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+
+  return value.trim() || undefined;
 }

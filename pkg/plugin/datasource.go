@@ -134,11 +134,12 @@ type DatasourceInstance struct {
 
 // DataSourceInstanceSettings contains settings for the datasource instance.
 type DataSourceInstanceSettings struct {
-	QueryParams  string `json:"customQueryParameters,omitempty"`
-	VMUIURL      string `json:"vmuiUrl,omitempty"`
-	TimeInterval string `json:"timeInterval,omitempty"`
-	QueryTimeout string `json:"queryTimeout,omitempty"`
-	HTTPMethod   string `json:"httpMethod,omitempty"`
+	QueryParams                  string `json:"customQueryParameters,omitempty"`
+	VMUIURL                      string `json:"vmuiUrl,omitempty"`
+	TimeInterval                 string `json:"timeInterval,omitempty"`
+	QueryTimeout                 string `json:"queryTimeout,omitempty"`
+	HTTPMethod                   string `json:"httpMethod,omitempty"`
+	ForwardedScopedVarHeaderName string `json:"forwardedScopedVarHeaderName,omitempty"`
 }
 
 // Dispose here tells plugin SDK that plugin wants to clean up resources when a new instance
@@ -161,6 +162,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 	if err != nil {
 		return nil, err
 	}
+	oauthAuthorization := req.GetHTTPHeader(backend.OAuthIdentityTokenHeaderName)
 
 	forAlerting, err := checkAlertingRequest(headers)
 	if err != nil {
@@ -173,7 +175,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 		wg.Add(1)
 		go func(q backend.DataQuery, forAlerting bool) {
 			defer wg.Done()
-			resp := di.query(ctx, q, forAlerting)
+			resp := di.query(ctx, q, forAlerting, oauthAuthorization, headers)
 			mu.Lock()
 			response.Responses[q.RefID] = resp
 			mu.Unlock()
@@ -185,7 +187,7 @@ func (d *Datasource) QueryData(ctx context.Context, req *backend.QueryDataReques
 }
 
 // query process backend.Query and return response
-func (di *DatasourceInstance) query(ctx context.Context, query backend.DataQuery, forAlerting bool) backend.DataResponse {
+func (di *DatasourceInstance) query(ctx context.Context, query backend.DataQuery, forAlerting bool, oauthAuthorization string, requestHeaders map[string]string) backend.DataResponse {
 	var q Query
 	if err := json.Unmarshal(query.JSON, &q); err != nil {
 		err = fmt.Errorf("failed to parse query json: %s", err)
@@ -196,6 +198,8 @@ func (di *DatasourceInstance) query(ctx context.Context, query backend.DataQuery
 	q.MaxDataPoints = query.MaxDataPoints
 	q.TimeInterval = di.settings.TimeInterval
 	q.BackendQueryInterval = query.Interval
+	q.Headers = mergeRequestAndQueryHeaders(requestHeaders, q.Headers)
+	q.Headers = addForwardedScopedVarHeader(q.Headers, di.settings.ForwardedScopedVarHeaderName, q.ForwardedScopedVarValue)
 
 	reqURL, err := q.getQueryURL(di.url, di.queryParams)
 	if err != nil {
@@ -203,7 +207,7 @@ func (di *DatasourceInstance) query(ctx context.Context, query backend.DataQuery
 		return newResponseError(err, backend.StatusBadRequest)
 	}
 
-	req, err := http.NewRequestWithContext(ctx, di.settings.HTTPMethod, reqURL, nil)
+	req, err := newQueryHTTPRequest(ctx, di.settings.HTTPMethod, reqURL, q.Headers, oauthAuthorization)
 	if err != nil {
 		err = fmt.Errorf("failed to create new request with context: %w", err)
 		return newResponseError(err, backend.StatusBadRequest)
@@ -217,7 +221,7 @@ func (di *DatasourceInstance) query(ctx context.Context, query backend.DataQuery
 
 		// Something in the middle between client and datasource might be closing
 		// the connection. So we do a one more attempt in hope request will succeed.
-		req, err = http.NewRequestWithContext(ctx, di.settings.HTTPMethod, reqURL, nil)
+		req, err = newQueryHTTPRequest(ctx, di.settings.HTTPMethod, reqURL, q.Headers, oauthAuthorization)
 		if err != nil {
 			err = fmt.Errorf("failed to create new request with context: %w", err)
 			return newResponseError(err, backend.StatusBadRequest)
@@ -284,6 +288,94 @@ func (di *DatasourceInstance) query(ctx context.Context, query backend.DataQuery
 	}
 
 	return backend.DataResponse{Frames: frames}
+}
+
+func newQueryHTTPRequest(ctx context.Context, method, reqURL string, headers map[string]string, oauthAuthorization string) (*http.Request, error) {
+	req, err := http.NewRequestWithContext(ctx, method, reqURL, nil)
+	if err != nil {
+		return nil, err
+	}
+	applyQueryHeaders(req, headers)
+	applyOAuthAuthorizationHeader(req, oauthAuthorization)
+	return req, nil
+}
+
+func applyOAuthAuthorizationHeader(req *http.Request, authorization string) {
+	authorization = strings.TrimSpace(authorization)
+	if authorization == "" || strings.ContainsAny(authorization, "\r\n") {
+		return
+	}
+	if !strings.HasPrefix(strings.ToLower(authorization), "bearer ") {
+		return
+	}
+	req.Header.Set(backend.OAuthIdentityTokenHeaderName, authorization)
+}
+
+func mergeRequestAndQueryHeaders(requestHeaders, queryHeaders map[string]string) map[string]string {
+	if len(requestHeaders) == 0 {
+		return queryHeaders
+	}
+	headers := make(map[string]string, len(requestHeaders)+len(queryHeaders))
+	for name, value := range requestHeaders {
+		headers[name] = value
+	}
+	for name, value := range queryHeaders {
+		headers[name] = value
+	}
+	return headers
+}
+
+func addForwardedScopedVarHeader(headers map[string]string, headerName, value string) map[string]string {
+	headerName = strings.TrimSpace(headerName)
+	value = strings.TrimSpace(value)
+	if headerName == "" || value == "" {
+		return headers
+	}
+	if headers == nil {
+		headers = map[string]string{}
+	}
+	headers[headerName] = value
+	return headers
+}
+
+func applyQueryHeaders(req *http.Request, headers map[string]string) {
+	for name, value := range headers {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" || !isForwardableQueryHeader(name) || strings.ContainsAny(value, "\r\n") {
+			continue
+		}
+		req.Header.Set(name, value)
+	}
+}
+
+func isForwardableQueryHeader(name string) bool {
+	switch strings.ToLower(name) {
+	case "authorization",
+		"connection",
+		"content-length",
+		"cookie",
+		"host",
+		"proxy-authenticate",
+		"proxy-authorization",
+		"te",
+		"trailer",
+		"transfer-encoding",
+		"upgrade":
+		return false
+	}
+
+	for _, r := range name {
+		switch {
+		case r >= 'a' && r <= 'z':
+		case r >= 'A' && r <= 'Z':
+		case r >= '0' && r <= '9':
+		case strings.ContainsRune("!#$%&'*+-.^_`|~", r):
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func formatResponseError(r Response) string {
@@ -436,6 +528,7 @@ func (d *Datasource) VMAPIQuery(rw http.ResponseWriter, req *http.Request) {
 		writeError(rw, http.StatusBadRequest, fmt.Errorf("failed to create new request with context: %w", err))
 		return
 	}
+	applyOAuthAuthorizationHeader(newReq, req.Header.Get(backend.OAuthIdentityTokenHeaderName))
 
 	resp, err := di.httpClient.Do(newReq)
 	if err != nil {
@@ -450,6 +543,7 @@ func (d *Datasource) VMAPIQuery(rw http.ResponseWriter, req *http.Request) {
 			writeError(rw, http.StatusBadRequest, fmt.Errorf("failed to create new request with context: %w", err))
 			return
 		}
+		applyOAuthAuthorizationHeader(newReq, req.Header.Get(backend.OAuthIdentityTokenHeaderName))
 
 		// Something in the middle between client and datasource might be closing
 		// the connection. So we do a one more attempt in hope request will succeed.

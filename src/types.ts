@@ -44,6 +44,8 @@ export interface PromQuery extends DataQuery {
   fromExploreMetrics?: boolean;
   /** Reference to dashboard variable with WITH template, e.g. "$withTemplate" */
   withTemplate?: string;
+  forwardedScopedVarValue?: string;
+  headers?: Record<string, string>;
 }
 
 export interface PromOptions extends DataSourceJsonData {
@@ -59,6 +61,8 @@ export interface PromOptions extends DataSourceJsonData {
   limitMetrics?: LimitMetrics;
   autocompleteSettings?: AutocompleteSettings;
   enableSecureSocksProxy?: boolean;
+  forwardedScopedVarName?: string;
+  forwardedScopedVarHeaderName?: string;
 }
 
 export enum PromQueryType {
@@ -87,7 +91,7 @@ export interface PromQueryRequest extends PromQuery {
   requestId?: string;
   start: number;
   end: number;
-  headers?: any;
+  headers?: Record<string, string>;
 }
 
 export interface PromMetricsMetadataItem {

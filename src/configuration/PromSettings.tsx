@@ -144,6 +144,42 @@ export const PromSettings = (props: Props) => {
         <div className='gf-form-inline'>
           <div className='gf-form max-width-30'>
             <FormField
+              label='Scoped variable'
+              labelWidth={14}
+              tooltip='Grafana scoped variable to forward on query requests. Use the variable name without the leading dollar sign.'
+              inputEl={
+                <Input
+                  className='width-25'
+                  value={defaultOptions.jsonData.forwardedScopedVarName}
+                  onChange={onChangeHandler('forwardedScopedVarName', defaultOptions, onOptionsChange)}
+                  spellCheck={false}
+                  placeholder='namespace'
+                />
+              }
+            />
+          </div>
+        </div>
+        <div className='gf-form-inline'>
+          <div className='gf-form max-width-30'>
+            <FormField
+              label='Scoped variable header'
+              labelWidth={14}
+              tooltip='HTTP header to set from the configured scoped variable when the selected value is a single value.'
+              inputEl={
+                <Input
+                  className='width-25'
+                  value={defaultOptions.jsonData.forwardedScopedVarHeaderName}
+                  onChange={onChangeHandler('forwardedScopedVarHeaderName', defaultOptions, onOptionsChange)}
+                  spellCheck={false}
+                  placeholder='X-Selected-Scope'
+                />
+              }
+            />
+          </div>
+        </div>
+        <div className='gf-form-inline'>
+          <div className='gf-form max-width-30'>
+            <FormField
               label='Link on vmui'
               labelWidth={14}
               tooltip={<>The link you want to use when clicking the <code>Run in vmui</code> button</>}
